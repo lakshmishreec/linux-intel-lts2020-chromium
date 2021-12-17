@@ -93,7 +93,7 @@ static const struct reg_default cs42l42_reg_defaults[] = {
 	{ CS42L42_ASP_RX_INT_MASK,		0x1F },
 	{ CS42L42_ASP_TX_INT_MASK,		0x0F },
 	{ CS42L42_CODEC_INT_MASK,		0x03 },
-	{ CS42L42_SRCPL_INT_MASK,		0xFF },
+	{ CS42L42_SRCPL_INT_MASK,		0x7F },
 	{ CS42L42_VPMON_INT_MASK,		0x01 },
 	{ CS42L42_PLL_LOCK_INT_MASK,		0x01 },
 	{ CS42L42_TSRS_PLUG_INT_MASK,		0x0F },
@@ -130,7 +130,7 @@ static const struct reg_default cs42l42_reg_defaults[] = {
 	{ CS42L42_MIXER_CHA_VOL,		0x3F },
 	{ CS42L42_MIXER_ADC_VOL,		0x3F },
 	{ CS42L42_MIXER_CHB_VOL,		0x3F },
-	{ CS42L42_EQ_COEF_IN0,			0x22 },
+	{ CS42L42_EQ_COEF_IN0,			0x00 },
 	{ CS42L42_EQ_COEF_IN1,			0x00 },
 	{ CS42L42_EQ_COEF_IN2,			0x00 },
 	{ CS42L42_EQ_COEF_IN3,			0x00 },
@@ -833,11 +833,10 @@ static int cs42l42_pcm_hw_params(struct snd_pcm_substream *substream,
 
 	switch (substream->stream) {
 	case SNDRV_PCM_STREAM_CAPTURE:
-		if (channels == 2) {
-			val |= CS42L42_ASP_TX_CH2_AP_MASK;
-			val |= width << CS42L42_ASP_TX_CH2_RES_SHIFT;
-		}
-		val |= width << CS42L42_ASP_TX_CH1_RES_SHIFT;
+		/* channel 2 on high LRCLK */
+		val = CS42L42_ASP_TX_CH2_AP_MASK |
+		      (width << CS42L42_ASP_TX_CH2_RES_SHIFT) |
+		      (width << CS42L42_ASP_TX_CH1_RES_SHIFT);
 
 		snd_soc_component_update_bits(component, CS42L42_ASP_TX_CH_AP_RES,
 				CS42L42_ASP_TX_CH1_AP_MASK | CS42L42_ASP_TX_CH2_AP_MASK |
@@ -1016,7 +1015,8 @@ static struct snd_soc_dai_driver cs42l42_dai = {
 static void cs42l42_manual_hs_type_detect(struct cs42l42_private *cs42l42)
 {
 	unsigned int hs_det_status;
-	unsigned int hs_det_comp;
+	unsigned int hs_det_comp1;
+	unsigned int hs_det_comp2;
 	unsigned int hs_det_sw;
 
 	/* Set hs detect to manual, active mode */
@@ -1031,23 +1031,40 @@ static void cs42l42_manual_hs_type_detect(struct cs42l42_private *cs42l42)
 		(0 << CS42L42_HSBIAS_REF_SHIFT) |
 		(0 << CS42L42_HSDET_AUTO_TIME_SHIFT));
 
+	/* Configure HS DET comparator reference levels. */
+	regmap_update_bits(cs42l42->regmap,
+				CS42L42_HSDET_CTL1,
+				CS42L42_HSDET_COMP1_LVL_MASK |
+				CS42L42_HSDET_COMP2_LVL_MASK,
+				(CS42L42_HSDET_COMP1_LVL_VAL << CS42L42_HSDET_COMP1_LVL_SHIFT) |
+				(CS42L42_HSDET_COMP2_LVL_VAL << CS42L42_HSDET_COMP2_LVL_SHIFT));
+
 	/* Open the SW_HSB_HS3 switch and close SW_HSB_HS4 for a Type 1 headset. */
 	regmap_write(cs42l42->regmap, CS42L42_HS_SWITCH_CTL, CS42L42_HSDET_SW_COMP1);
 
+	msleep(100);
+
 	regmap_read(cs42l42->regmap, CS42L42_HS_DET_STATUS, &hs_det_status);
 
-	hs_det_comp = (hs_det_status & CS42L42_HSDET_COMP1_OUT_MASK) >>
+	hs_det_comp1 = (hs_det_status & CS42L42_HSDET_COMP1_OUT_MASK) >>
 			CS42L42_HSDET_COMP1_OUT_SHIFT;
+	hs_det_comp2 = (hs_det_status & CS42L42_HSDET_COMP2_OUT_MASK) >>
+			CS42L42_HSDET_COMP2_OUT_SHIFT;
 
 	/* Close the SW_HSB_HS3 switch for a Type 2 headset. */
 	regmap_write(cs42l42->regmap, CS42L42_HS_SWITCH_CTL, CS42L42_HSDET_SW_COMP2);
 
+	msleep(100);
+
 	regmap_read(cs42l42->regmap, CS42L42_HS_DET_STATUS, &hs_det_status);
 
-	hs_det_comp |= ((hs_det_status & CS42L42_HSDET_COMP2_OUT_MASK) >>
+	hs_det_comp1 |= ((hs_det_status & CS42L42_HSDET_COMP1_OUT_MASK) >>
+			CS42L42_HSDET_COMP1_OUT_SHIFT) << 1;
+	hs_det_comp2 |= ((hs_det_status & CS42L42_HSDET_COMP2_OUT_MASK) >>
 			CS42L42_HSDET_COMP2_OUT_SHIFT) << 1;
 
-	switch (hs_det_comp) {
+	/* Use Comparator 1 with 1.25V Threshold. */
+	switch (hs_det_comp1) {
 	case CS42L42_HSDET_COMP_TYPE1:
 		cs42l42->hs_type = CS42L42_PLUG_CTIA;
 		hs_det_sw = CS42L42_HSDET_SW_TYPE1;
@@ -1056,14 +1073,26 @@ static void cs42l42_manual_hs_type_detect(struct cs42l42_private *cs42l42)
 		cs42l42->hs_type = CS42L42_PLUG_OMTP;
 		hs_det_sw = CS42L42_HSDET_SW_TYPE2;
 		break;
-	case CS42L42_HSDET_COMP_TYPE3:
-		cs42l42->hs_type = CS42L42_PLUG_HEADPHONE;
-		hs_det_sw = CS42L42_HSDET_SW_TYPE3;
-		break;
 	default:
-		cs42l42->hs_type = CS42L42_PLUG_INVALID;
-		hs_det_sw = CS42L42_HSDET_SW_TYPE4;
-		break;
+		/* Fallback to Comparator 2 with 1.75V Threshold. */
+		switch (hs_det_comp2) {
+		case CS42L42_HSDET_COMP_TYPE1:
+			cs42l42->hs_type = CS42L42_PLUG_CTIA;
+			hs_det_sw = CS42L42_HSDET_SW_TYPE1;
+			break;
+		case CS42L42_HSDET_COMP_TYPE2:
+			cs42l42->hs_type = CS42L42_PLUG_OMTP;
+			hs_det_sw = CS42L42_HSDET_SW_TYPE2;
+			break;
+		case CS42L42_HSDET_COMP_TYPE3:
+			cs42l42->hs_type = CS42L42_PLUG_HEADPHONE;
+			hs_det_sw = CS42L42_HSDET_SW_TYPE3;
+			break;
+		default:
+			cs42l42->hs_type = CS42L42_PLUG_INVALID;
+			hs_det_sw = CS42L42_HSDET_SW_TYPE4;
+			break;
+		}
 	}
 
 	/* Set Switches */
@@ -1080,6 +1109,14 @@ static void cs42l42_manual_hs_type_detect(struct cs42l42_private *cs42l42)
 		(0 << CS42L42_HSDET_SET_SHIFT) |
 		(0 << CS42L42_HSBIAS_REF_SHIFT) |
 		(0 << CS42L42_HSDET_AUTO_TIME_SHIFT));
+
+	/* Configure HS DET comparator reference levels. */
+	regmap_update_bits(cs42l42->regmap,
+				CS42L42_HSDET_CTL1,
+				CS42L42_HSDET_COMP1_LVL_MASK |
+				CS42L42_HSDET_COMP2_LVL_MASK,
+				(CS42L42_HSDET_COMP1_LVL_DEFAULT << CS42L42_HSDET_COMP1_LVL_SHIFT) |
+				(CS42L42_HSDET_COMP2_LVL_DEFAULT << CS42L42_HSDET_COMP2_LVL_SHIFT));
 }
 
 static void cs42l42_process_hs_type_detect(struct cs42l42_private *cs42l42)
@@ -1102,6 +1139,18 @@ static void cs42l42_process_hs_type_detect(struct cs42l42_private *cs42l42)
 	cs42l42->hs_type = (hs_det_status & CS42L42_HSDET_TYPE_MASK) >>
 				CS42L42_HSDET_TYPE_SHIFT;
 
+	/* Set hs detect to automatic, disabled mode */
+	regmap_update_bits(cs42l42->regmap,
+		CS42L42_HSDET_CTL2,
+		CS42L42_HSDET_CTRL_MASK |
+		CS42L42_HSDET_SET_MASK |
+		CS42L42_HSBIAS_REF_MASK |
+		CS42L42_HSDET_AUTO_TIME_MASK,
+		(2 << CS42L42_HSDET_CTRL_SHIFT) |
+		(2 << CS42L42_HSDET_SET_SHIFT) |
+		(0 << CS42L42_HSBIAS_REF_SHIFT) |
+		(3 << CS42L42_HSDET_AUTO_TIME_SHIFT));
+
 	/* Run Manual detection if auto detect has not found a headset.
 	 * We Re-Run with Manual Detection if the original detection was invalid or headphones,
 	 * to ensure that a headset mic is detected in all cases.
@@ -1110,18 +1159,6 @@ static void cs42l42_process_hs_type_detect(struct cs42l42_private *cs42l42)
 		cs42l42->hs_type == CS42L42_PLUG_HEADPHONE) {
 		dev_dbg(cs42l42->component->dev, "Running Manual Detection Fallback\n");
 		cs42l42_manual_hs_type_detect(cs42l42);
-	} else {
-		/* Set hs detect to automatic, disabled mode */
-		regmap_update_bits(cs42l42->regmap,
-			CS42L42_HSDET_CTL2,
-			CS42L42_HSDET_CTRL_MASK |
-			CS42L42_HSDET_SET_MASK |
-			CS42L42_HSBIAS_REF_MASK |
-			CS42L42_HSDET_AUTO_TIME_MASK,
-			(2 << CS42L42_HSDET_CTRL_SHIFT) |
-			(2 << CS42L42_HSDET_SET_SHIFT) |
-			(0 << CS42L42_HSBIAS_REF_SHIFT) |
-			(3 << CS42L42_HSDET_AUTO_TIME_SHIFT));
 	}
 
 	/* Set up button detection */
@@ -1742,12 +1779,15 @@ static void cs42l42_setup_hs_type_detect(struct cs42l42_private *cs42l42)
 			(1 << CS42L42_HS_CLAMP_DISABLE_SHIFT));
 
 	/* Enable the tip sense circuit */
+	regmap_update_bits(cs42l42->regmap, CS42L42_TSENSE_CTL,
+			   CS42L42_TS_INV_MASK, CS42L42_TS_INV_MASK);
+
 	regmap_update_bits(cs42l42->regmap, CS42L42_TIPSENSE_CTL,
 			CS42L42_TIP_SENSE_CTRL_MASK |
 			CS42L42_TIP_SENSE_INV_MASK |
 			CS42L42_TIP_SENSE_DEBOUNCE_MASK,
 			(3 << CS42L42_TIP_SENSE_CTRL_SHIFT) |
-			(0 << CS42L42_TIP_SENSE_INV_SHIFT) |
+			(!cs42l42->ts_inv << CS42L42_TIP_SENSE_INV_SHIFT) |
 			(2 << CS42L42_TIP_SENSE_DEBOUNCE_SHIFT));
 
 	/* Save the initial status of the tip sense */
@@ -1790,10 +1830,6 @@ static int cs42l42_handle_device_data(struct device *dev,
 	} else {
 		cs42l42->ts_inv = CS42L42_TS_INV_DIS;
 	}
-
-	regmap_update_bits(cs42l42->regmap, CS42L42_TSENSE_CTL,
-			CS42L42_TS_INV_MASK,
-			(cs42l42->ts_inv << CS42L42_TS_INV_SHIFT));
 
 	ret = device_property_read_u32(dev, "cirrus,ts-dbnc-rise", &val);
 	if (!ret) {
@@ -2005,8 +2041,9 @@ static int cs42l42_i2c_probe(struct i2c_client *i2c_client,
 			NULL, cs42l42_irq_thread,
 			IRQF_ONESHOT | IRQF_TRIGGER_LOW,
 			"cs42l42", cs42l42);
-
-	if (ret != 0)
+	if (ret == -EPROBE_DEFER)
+		goto err_disable;
+	else if (ret != 0)
 		dev_err(&i2c_client->dev,
 			"Failed to request IRQ: %d\n", ret);
 

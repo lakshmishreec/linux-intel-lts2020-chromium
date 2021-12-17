@@ -1610,11 +1610,6 @@ static inline bool slab_free_freelist_hook(struct kmem_cache *s,
 		return true;
 	}
 
-	if (is_kfence_address(next)) {
-		slab_free_hook(s, next);
-		return true;
-	}
-
 	/* Head and tail of the reconstructed freelist */
 	*head = NULL;
 	*tail = NULL;

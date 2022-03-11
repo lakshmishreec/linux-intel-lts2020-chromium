@@ -682,7 +682,7 @@ static int afs_writepages_region(struct address_space *mapping,
 				 pgoff_t index, pgoff_t end, pgoff_t *_next)
 {
 	struct page *page;
-	int ret, n;
+	int ret, n, skips = 0;
 
 	_enter(",,%lx,%lx,", index, end);
 
@@ -718,6 +718,11 @@ static int afs_writepages_region(struct address_space *mapping,
 			if (wbc->sync_mode != WB_SYNC_NONE)
 				wait_on_page_writeback(page);
 			put_page(page);
+			if (wbc->sync_mode == WB_SYNC_NONE) {
+				if (skips >= 5 || need_resched())
+					break;
+				skips++;
+			}
 			continue;
 		}
 

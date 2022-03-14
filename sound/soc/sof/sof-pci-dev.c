@@ -75,6 +75,7 @@ static const struct dmi_system_id sof_tplg_table[] = {
 		},
 		.driver_data = "sof-adl-max98360a-rt5682-2way.tplg",
 	},
+
 	{}
 };
 

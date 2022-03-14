@@ -1602,7 +1602,9 @@ static void ice_handle_mdd_event(struct ice_pf *pf)
 				 * reset, so print the event prior to reset.
 				 */
 				ice_print_vf_rx_mdd_event(vf);
+				mutex_lock(&pf->vf[i].cfg_lock);
 				ice_reset_vf(&pf->vf[i], false);
+				mutex_unlock(&pf->vf[i].cfg_lock);
 			}
 		}
 	}
@@ -4071,11 +4073,7 @@ ice_probe(struct pci_dev *pdev, const struct pci_device_id __always_unused *ent)
 
 	pf->msg_enable = netif_msg_init(debug, ICE_DFLT_NETIF_M);
 
-	err = ice_devlink_register(pf);
-	if (err) {
-		dev_err(dev, "ice_devlink_register failed: %d\n", err);
-		goto err_exit_unroll;
-	}
+	ice_devlink_register(pf);
 
 #ifndef CONFIG_DYNAMIC_DEBUG
 	if (debug < -1)

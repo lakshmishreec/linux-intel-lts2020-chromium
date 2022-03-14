@@ -167,6 +167,7 @@
 	display-subsystem {
 		compatible = "rockchip,display-subsystem";
 		ports = <&vopl_out>, <&vopb_out>;
+		devfreq = <&dmc>;
 	};
 
 	pmu_a53 {
@@ -830,6 +831,7 @@
 		gpu_thermal: gpu {
 			polling-delay-passive = <100>;
 			polling-delay = <1000>;
+			sustainable-power = <1300>;
 
 			thermal-sensors = <&tsadc 1>;
 
@@ -1267,6 +1269,25 @@
 		pinctrl-0 = <&pwm3a_pin>;
 		clocks = <&pmucru PCLK_RKPWM_PMU>;
 		clock-names = "pwm";
+		status = "disabled";
+	};
+
+	dfi: dfi@ff630000 {
+		reg = <0x00 0xff630000 0x00 0x4000>;
+		compatible = "rockchip,rk3399-dfi";
+		rockchip,pmu = <&pmugrf>;
+		interrupts = <GIC_SPI 131 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&cru PCLK_DDR_MON>;
+		clock-names = "pclk_ddr_mon";
+		status = "disabled";
+	};
+
+	dmc: memory-controller {
+		compatible = "rockchip,rk3399-dmc";
+		rockchip,pmu = <&pmugrf>;
+		devfreq-events = <&dfi>;
+		clocks = <&cru SCLK_DDRC>;
+		clock-names = "dmc_clk";
 		status = "disabled";
 	};
 

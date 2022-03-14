@@ -89,6 +89,7 @@ static const struct ath11k_hw_params ath11k_hw_params[] = {
 		.supports_suspend = false,
 		.hal_desc_sz = sizeof(struct hal_rx_desc_ipq8074),
 		.supports_regdb = false,
+		.supports_cc_ext = false,
 		.fix_l1ss = true,
 		.credit_flow = false,
 		.max_tx_ring = DP_TCL_NUM_RING_MAX,
@@ -154,6 +155,7 @@ static const struct ath11k_hw_params ath11k_hw_params[] = {
 		.supports_suspend = false,
 		.hal_desc_sz = sizeof(struct hal_rx_desc_ipq8074),
 		.supports_regdb = false,
+		.supports_cc_ext = false,
 		.fix_l1ss = true,
 		.credit_flow = false,
 		.max_tx_ring = DP_TCL_NUM_RING_MAX,
@@ -217,7 +219,8 @@ static const struct ath11k_hw_params ath11k_hw_params[] = {
 		.num_peers = 512,
 		.supports_suspend = true,
 		.hal_desc_sz = sizeof(struct hal_rx_desc_ipq8074),
-		.supports_regdb = true,
+		.supports_regdb = false,
+		.supports_cc_ext = false,
 		.fix_l1ss = true,
 		.credit_flow = true,
 		.max_tx_ring = DP_TCL_NUM_RING_MAX_QCA6390,
@@ -282,6 +285,7 @@ static const struct ath11k_hw_params ath11k_hw_params[] = {
 		.supports_suspend = false,
 		.hal_desc_sz = sizeof(struct hal_rx_desc_qcn9074),
 		.supports_regdb = false,
+		.supports_cc_ext = false,
 		.fix_l1ss = true,
 		.credit_flow = false,
 		.max_tx_ring = DP_TCL_NUM_RING_MAX,
@@ -346,6 +350,7 @@ static const struct ath11k_hw_params ath11k_hw_params[] = {
 		.supports_suspend = true,
 		.hal_desc_sz = sizeof(struct hal_rx_desc_wcn6855),
 		.supports_regdb = true,
+		.supports_cc_ext = true,
 		.fix_l1ss = false,
 		.credit_flow = true,
 		.max_tx_ring = DP_TCL_NUM_RING_MAX_QCA6390,
@@ -413,6 +418,7 @@ static const struct ath11k_hw_params ath11k_hw_params[] = {
 		.supports_suspend = true,
 		.hal_desc_sz = sizeof(struct hal_rx_desc_wcn6855),
 		.supports_regdb = true,
+		.supports_cc_ext = true,
 		.fix_l1ss = false,
 		.credit_flow = true,
 		.max_tx_ring = DP_TCL_NUM_RING_MAX_QCA6390,
@@ -679,16 +685,15 @@ out:
 
 static int ath11k_core_fetch_board_data_api_n(struct ath11k_base *ab,
 					      struct ath11k_board_data *bd,
-					      const char *boardname)
+					      const char *boardname,
+					      const char *filename)
 {
 	size_t len, magic_len;
 	const u8 *data;
-	char *filename, filepath[100];
+	char filepath[100];
 	size_t ie_len;
 	struct ath11k_fw_ie *hdr;
 	int ret, ie_id;
-
-	filename = ATH11K_BOARD_API2_FILE;
 
 	if (!bd->fw)
 		bd->fw = ath11k_core_firmware_request(ab, filename);
@@ -802,6 +807,7 @@ int ath11k_core_fetch_board_data_api_1(struct ath11k_base *ab,
 int ath11k_core_fetch_bdf(struct ath11k_base *ab, struct ath11k_board_data *bd)
 {
 	char boardname[BOARD_NAME_SIZE];
+	char *filename = ATH11K_BOARD_API2_FILE;
 	int ret;
 
 	ret = ath11k_core_create_board_name(ab, boardname, BOARD_NAME_SIZE);
@@ -811,7 +817,7 @@ int ath11k_core_fetch_bdf(struct ath11k_base *ab, struct ath11k_board_data *bd)
 	}
 
 	ab->bd_api = 2;
-	ret = ath11k_core_fetch_board_data_api_n(ab, bd, boardname);
+	ret = ath11k_core_fetch_board_data_api_n(ab, bd, boardname, filename);
 	if (!ret)
 		goto success;
 
@@ -830,14 +836,32 @@ success:
 
 int ath11k_core_fetch_regdb(struct ath11k_base *ab, struct ath11k_board_data *bd)
 {
+	char boardname[BOARD_NAME_SIZE];
+	char *filename = ATH11K_REGDB_API2_FILE;
 	int ret;
 
+	ret = ath11k_core_create_board_name(ab, boardname, sizeof(boardname));
+	if (ret) {
+		ath11k_dbg(ab, ATH11K_DBG_BOOT,
+			   "failed to create board name for regdb: %d", ret);
+		return ret;
+	}
+
+	ret = ath11k_core_fetch_board_data_api_n(ab, bd, boardname, filename);
+	if (!ret)
+		goto success;
+
 	ret = ath11k_core_fetch_board_data_api_1(ab, bd, ATH11K_REGDB_FILE_NAME);
-	if (ret)
+	if (ret) {
 		ath11k_dbg(ab, ATH11K_DBG_BOOT, "failed to fetch %s from %s\n",
 			   ATH11K_REGDB_FILE_NAME, ab->hw_params.fw.dir);
+		return ret;
+	}
 
-	return ret;
+success:
+	ath11k_dbg(ab, ATH11K_DBG_BOOT, "fetched regdb\n");
+	return 0;
+
 }
 
 static void ath11k_core_stop(struct ath11k_base *ab)
@@ -1208,6 +1232,7 @@ void ath11k_core_halt(struct ath11k *ar)
 	ath11k_mac_peer_cleanup_all(ar);
 	cancel_delayed_work_sync(&ar->scan.timeout);
 	cancel_work_sync(&ar->regd_update_work);
+	cancel_work_sync(&ab->update_11d_work);
 	cancel_work_sync(&ab->rfkill_work);
 
 	rcu_assign_pointer(ab->pdevs_active[ar->pdev_idx], NULL);
@@ -1238,6 +1263,34 @@ static void ath11k_rfkill_work(struct work_struct *work)
 	}
 }
 
+static void ath11k_update_11d(struct work_struct *work)
+{
+	struct ath11k_base *ab = container_of(work, struct ath11k_base, update_11d_work);
+	struct ath11k *ar;
+	struct ath11k_pdev *pdev;
+	struct wmi_set_current_country_params set_current_param = {};
+	int ret, i;
+
+	spin_lock_bh(&ab->base_lock);
+	memcpy(&set_current_param.alpha2, &ab->new_alpha2, 2);
+	spin_unlock_bh(&ab->base_lock);
+
+	ath11k_dbg(ab, ATH11K_DBG_WMI, "update 11d new cc %c%c\n",
+		   set_current_param.alpha2[0],
+		   set_current_param.alpha2[1]);
+
+	for (i = 0; i < ab->num_radios; i++) {
+		pdev = &ab->pdevs[i];
+		ar = pdev->ar;
+
+		ret = ath11k_wmi_send_set_current_country_cmd(ar, &set_current_param);
+		if (ret)
+			ath11k_warn(ar->ab,
+				    "pdev id %d failed set current country code: %d\n",
+				    i, ret);
+	}
+}
+
 static void ath11k_core_pre_reconfigure_recovery(struct ath11k_base *ab)
 {
 	struct ath11k *ar;
@@ -1256,6 +1309,7 @@ static void ath11k_core_pre_reconfigure_recovery(struct ath11k_base *ab)
 
 		ieee80211_stop_queues(ar->hw);
 		ath11k_mac_drain_tx(ar);
+		complete(&ar->completed_11d_scan);
 		complete(&ar->scan.started);
 		complete(&ar->scan.completed);
 		complete(&ar->peer_assoc_done);
@@ -1513,12 +1567,14 @@ struct ath11k_base *ath11k_core_alloc(struct device *dev, size_t priv_size,
 	init_completion(&ab->reset_complete);
 	init_completion(&ab->reconfigure_complete);
 	init_completion(&ab->recovery_start);
+	mutex_init(&ab->vdev_id_11d_lock);
 
 	INIT_LIST_HEAD(&ab->peers);
 	init_waitqueue_head(&ab->peer_mapping_wq);
 	init_waitqueue_head(&ab->wmi_ab.tx_credits_wq);
 	init_waitqueue_head(&ab->qmi.cold_boot_waitq);
 	INIT_WORK(&ab->restart_work, ath11k_core_restart);
+	INIT_WORK(&ab->update_11d_work, ath11k_update_11d);
 	INIT_WORK(&ab->rfkill_work, ath11k_rfkill_work);
 	INIT_WORK(&ab->reset_work, ath11k_core_reset);
 	timer_setup(&ab->rx_replenish_retry, ath11k_ce_rx_replenish_retry, 0);
